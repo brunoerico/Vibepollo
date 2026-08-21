@@ -226,5 +226,35 @@ Plano de emissão (DNS do domínio já está no Cloudflare, confirmado via `dig 
    isso de verdade): criar o registro DNS, instalar/configurar o win-acme, confirmar que
    `https://<subdomínio>/stream` carrega sem aviso nenhum de certificado.
 
-**Bloqueado por**: falta o API token do Cloudflare (escopado) pra criar o registro DNS e
-configurar o win-acme. Sem isso não dá pra executar os passos 1-3 acima.
+**Bloqueado por**: falta IP fixo pra máquina (hoje atrás de CGNAT — confirmado via
+`tracert`, segundo salto em `100.64.0.0/10`, IP público reportado é compartilhado e
+inalcançável de fora). Cloudflare Tunnel resolveria só a camada de sinalização (47990),
+não a mídia WebRTC em si (RTP/SRTP não passa por túnel — precisaria de um TURN nosso,
+exatamente o custo de infra que queríamos evitar). IP fixo + redirecionamento de porta no
+roteador resolve as duas camadas de uma vez, e também destrava a conexão nativa (que sofre
+do mesmo problema). Decisão do usuário (2026-08-21): vai contratar IP fixo, mas testar sem
+ele por enquanto — o que ficou provado abaixo já é suficiente pra continuar sem isso.
+
+**Mecanismo validado de ponta a ponta em 2026-08-21 (só na LAN, sem certificado real
+ainda)** — prova real, não suposição:
+1. `POST /api/token` com Basic auth (credencial real do admin) e o corpo de escopos acima
+   → devolveu um token.
+2. Esse token, sozinho (sem cookie de sessão, sem Basic auth em mais nada): `GET /api/apps`
+   → 200; `GET /api/webrtc/capabilities` → 200.
+3. Mesmo token contra rotas fora do escopo: `POST /api/apps/delete` → 403 "Forbidden: Token
+   does not have permission for this path/method"; `GET /api/config` → 403. Confirma que o
+   escopo é respeitado de verdade, não é decorativo.
+4. `POST /api/webrtc/sessions` com `app_id` (precisa ser **número**, não string — erro real
+   encontrado testando) usando só o token → 200, sessão real criada com
+   `cert_fingerprint`/`cert_pem` (handshake DTLS) devolvidos. **Prova que dá pra abrir uma
+   sessão de streaming inteira usando só esse token, nunca a sessão do admin.**
+5. `DELETE /api/webrtc/sessions/{id}` e `DELETE /api/token/{hash}` (via admin) funcionam —
+   depois de revogado, o mesmo token volta a dar 403 em tudo. Ciclo de vida completo
+   (emitir → usar → revogar) funciona.
+
+Falta pra virar produto de verdade: (a) IP fixo + porta redirecionada (bloqueado, ver
+acima) e o certificado real via win-acme+Cloudflare (plano já documentado); (b) o
+`lanhouse-web` mintar um token desses por sessão de cliente (chamando `/api/token` com a
+credencial do painel guardada do lado do servidor) em vez de eu gerar manualmente; (c) uma
+página/cliente nosso que fale com essas rotas no lugar da SPA do Vibepollo (ou aceitar
+carregar a SPA dele direto, já que ela não exige nenhuma autenticação pra servir o HTML).
