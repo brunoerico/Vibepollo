@@ -154,3 +154,77 @@ cobre a perda.
 5. Iniciar o serviço e conferir `root.uniqueid` em `sunshine_state.json` contra o
    anotado no passo 1 — **se mudou, atualizar `hosts.moonlight_host_id`** no Supabase
    pra essa máquina antes de considerar restaurado.
+
+## Decisão (2026-08-21): como cada cliente vai usar o WebRTC nativo do Vibepollo
+
+Depois do teste aprovado (H.264/HEVC 60fps, ~9ms latência total, ver seção "WebRTC nativo —
+aprovado" acima), decidimos usar o motor WebRTC do próprio Vibepollo em produção pros
+clientes — em vez de terminar/manter nossa ponte própria (`dev/lanhouse-stream/client`,
+fork do moonlight-web-stream, nunca chegou a ir pra produção de verdade). Investigação real
+no código-fonte (não suposição) confirmou o caminho:
+
+**Por que não dá pra simplesmente mandar o cliente pra `/stream` do painel:** essa página
+usa a mesma sessão do painel administrativo (senha única, compartilhada entre todos os
+hosts). Qualquer cliente que entrasse veria/controlaria o painel inteiro — outros jogos,
+outras sessões. Inviável pra multi-tenant.
+
+**Mecanismo real, confirmado lendo `src/http_auth_request_policy.cpp` e
+`src/confighttp.cpp`:**
+
+1. O HTML/JS/CSS da SPA **não exige autenticação nenhuma** (`RequestAuthPolicy::check` só
+   protege rotas `/api/*` — o resto é sempre liberado). Só as chamadas de API por baixo
+   precisam de credencial.
+2. `/api/*` aceita `Authorization: Bearer <token>`, com token gerado via
+   `POST /api/token` (autenticado com a credencial real do painel) recebendo um corpo tipo:
+   ```json
+   { "scopes": [{ "path": "^/api/webrtc/sessions$", "methods": ["GET", "POST"] }, ...] }
+   ```
+   O `path` de cada escopo é regex de verdade (`ApiTokenManager::authenticate_token` usa
+   `std::regex_match`), então dá pra escopar exatamente pros endpoints que a página de
+   stream usa e nada além disso — sem acesso a configurações, outros tokens, apagar apps,
+   etc.
+3. Endpoints reais que a página de stream/WebRTC usa (mapeados lendo
+   `src_assets/common/assets/web/views/BrowserStreamView.vue` e
+   `src_assets/common/assets/web/services/webrtc.ts` — token final deve cobrir só isso):
+   `GET /api/webrtc/capabilities`, `GET /api/webrtc/cert`, `POST /api/webrtc/sessions`,
+   `GET|DELETE /api/webrtc/sessions/{uuid}`, `POST /api/webrtc/sessions/{uuid}/offer`,
+   `GET /api/webrtc/sessions/{uuid}/answer`, `GET|POST /api/webrtc/sessions/{uuid}/ice`,
+   `GET /api/webrtc/sessions/{uuid}/ice/stream`, `GET /api/apps`,
+   `GET /api/apps/{id}/cover`, `GET /api/apps/{id}/icon`, `GET /api/session/status`,
+   `POST /api/apps/close`. Risco residual aceito pro MVP: o token é por-host, não
+   por-sessão — um portador do token consegue, em teoria, mexer em qualquer sessão daquele
+   host, não só a que ele criou (IDs são UUID, não enumeráveis, mas não é isolamento
+   perfeito). Reavaliar se algum dia isso passar a incomodar de verdade.
+4. Sinalização é HTTP puro (`fetch`/`apiGet`/`apiPost`), nada de WebSocket — mais simples
+   de trabalhar. O vídeo/áudio em si (RTP/SRTP) continua indo direto do host pro navegador
+   do cliente via WebRTC de verdade, nunca passa pela nossa infra — sem custo de banda
+   nosso, só o overhead pequeno da sinalização.
+
+**Certificado TLS — decidido resolver de verdade agora, não aceitar aviso de "não
+seguro"** (opção descartada: aceitar o autoassinado só pro MVP). Como o cliente vai falar
+**direto** com `https://<host>:47990` (sem proxy nosso no meio pra esconder isso), esse
+endereço precisa de certificado confiável de verdade. Achado importante:
+`confighttp.cpp:5700` monta o servidor HTTPS do painel (porta 47990, onde vive `/stream` e
+toda a API WebRTC) com `config::nvhttp.cert`/`config::nvhttp.pkey` — os mesmos caminhos de
+arquivo configuráveis em `sunshine.conf` (`cert`/`pkey`). Ou seja: **dá pra substituir por
+um certificado real sem tocar em nada do código do Vibepollo**, só apontando esses dois
+caminhos pra um cert/key de verdade.
+
+Plano de emissão (DNS do domínio já está no Cloudflare, confirmado via `dig NS`):
+1. Uma subdomínio fixo por host: `<hosts.id>.hosts.lanhousecloudgaming.com.br` (ex:
+   `maquina-teste.hosts.lanhousecloudgaming.com.br`) → registro A apontando pro IP público
+   da máquina.
+2. Emitir via ACME **DNS-01** (não HTTP-01 — máquina pode estar atrás de CGNAT/sem porta 80
+   exposta) usando [win-acme](https://www.win-acme.com/) com o plugin de validação
+   Cloudflare — precisa de um **API token do Cloudflare escopado só pra edição de DNS**
+   nessa zona (não a chave global da conta).
+3. win-acme roda a renovação sozinho (cria a própria Scheduled Task) — só falta um script
+   de pós-renovação (`--installation script`) que copie o cert/key novo pro caminho do
+   `sunshine.conf` e reinicie `ApolloService`, senão o serviço continua servindo o
+   certificado antigo até reiniciar manualmente.
+4. Nova etapa no runbook do Maquinista (a inserir em `maquinista.md` quando executarmos
+   isso de verdade): criar o registro DNS, instalar/configurar o win-acme, confirmar que
+   `https://<subdomínio>/stream` carrega sem aviso nenhum de certificado.
+
+**Bloqueado por**: falta o API token do Cloudflare (escopado) pra criar o registro DNS e
+configurar o win-acme. Sem isso não dá pra executar os passos 1-3 acima.
