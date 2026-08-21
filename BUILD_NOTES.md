@@ -40,16 +40,13 @@ já fazemos com o `host-apollo`.
 ## Status
 
 - [x] Repositório próprio criado (`brunoerico/Vibepollo`), submódulo registrado aqui.
-- [ ] Build local/numa máquina Windows de teste (não é possível a partir do macOS —
-      mesma limitação já documentada pro app Windows nativo).
-- [ ] Instalar numa máquina separada (ou em janela de tempo isolada na máquina de teste
-      atual) — **sem tocar no `host-apollo` que já está em uso**.
-- [ ] Confirmar que o `lanhouse-host-agent.ps1` funciona sem modificação contra ele —
-      deve funcionar, já que o agente fala só com a API HTTP local padrão do Apollo/
-      Sunshine (`/api/login`, `/api/pin`, `/api/clients/*` em `localhost:47990`), sem
-      nenhum patch de código-fonte do nosso lado (conferido: nosso `host-apollo` só tem
-      9 linhas de diff real em `src/video.cpp` além de docs/scripts — nenhuma lógica de
-      pareamento/acesso vive dentro do Apollo em si).
+- [x] Instalado na máquina de teste (release oficial `-stable`, via `/qn` silencioso —
+      ver seção de risco/runbook acima) em 2026-08-21. Confirmado sem tocar no que já
+      estava lá: `uniqueid`, certificado do cliente pareado e `apps.json` sobreviveram
+      intactos, sem precisar restaurar o backup nem ressincronizar o Supabase.
+- [x] Confirmado que o `lanhouse-host-agent.ps1` funciona sem nenhuma modificação contra
+      ele — heartbeat chegou fresco no Supabase logo após a instalação, sem restart da
+      Scheduled Task nem do agente.
 - [ ] Testar o encoder AMD/AMF na RX 7600 real, comparando com o comportamento
       HEVC_AMF/H.264 já documentado no `host-apollo`.
 - [ ] Testar o WebRTC nativo dele como alternativa/complemento à nossa ponte própria.
@@ -67,6 +64,28 @@ virtual) — já vivemos exatamente essa classe de perda antes, ver a seção "A
 os 3 clientes e resincronizar `hosts.moonlight_host_id` manualmente).
 
 **Não instalar o Vibepollo na máquina de teste sem seguir o runbook abaixo primeiro.**
+
+**Atualização (2026-08-21, testado de verdade): o instalador tem um modo silencioso que evita
+esse risco por completo.** `VibeshineInstaller.cs` (o bootstrapper `.exe`) tem dois caminhos
+bem diferentes: sem argumentos ele abre a UI gráfica com o `MsgBox`/overlay perguntando sobre
+o Apollo existente (o cenário arriscado descrito acima); com qualquer argumento reconhecido
+como MSI (ex: `/qn`) ele entra em `RunCli()`, que **detecta e desinstala Apollo/Sunshine/
+Vibeshine concorrentes de forma totalmente automática e silenciosa** (`UninstallCompetingProducts`),
+sem abrir diálogo nenhum. Rodado assim (`VibepolloSetup-vX.Y.Z-stable.N.exe /qn` via
+`Start-Process -Wait -PassThru`), terminou com `ExitCode=0` em ~1min, sem travar esperando
+clique. Verificado depois: `ApolloService` `Running`, porta 47990 respondendo, **config
+100% preservada** (`sunshine_state.json` byte-idêntico — mesmo `uniqueid`, mesmo certificado
+do cliente pareado "LanHouse Native", mesma senha/salt; `apps.json` e `sunshine.conf`
+também intocados), nenhuma flag de reboot pendente no registro, e o
+`lanhouse-host-agent.ps1` mandou heartbeat fresco pro Supabase sem nenhuma mudança de
+código — confirma que a API REST local (`localhost:47990`) do Vibepollo é mesmo compatível
+com o Apollo puro. Cria um arquivo novo, `vibeshine_state.json`, só com `app_id_aliases`
+(feature própria dele de manter o `moonlight_app_id` estável entre trocas de capa) — não
+mexe no `uniqueid` nem em nada que a LanHouse dependa.
+
+**Runbook revisado:** usar `/qn` em vez do fluxo "clicar OK" abaixo — mais seguro (sem UI
+pra travar) e mais rápido. O passo 1 (backup) continua obrigatório mesmo assim, como rede
+de segurança caso uma versão futura do instalador se comporte diferente.
 
 ## Runbook de teste seguro (revezando na mesma máquina)
 
