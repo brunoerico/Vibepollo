@@ -47,9 +47,21 @@ já fazemos com o `host-apollo`.
 - [x] Confirmado que o `lanhouse-host-agent.ps1` funciona sem nenhuma modificação contra
       ele — heartbeat chegou fresco no Supabase logo após a instalação, sem restart da
       Scheduled Task nem do agente.
-- [ ] Testar o encoder AMD/AMF na RX 7600 real, comparando com o comportamento
-      HEVC_AMF/H.264 já documentado no `host-apollo`.
-- [ ] Testar o WebRTC nativo dele como alternativa/complemento à nossa ponte própria.
+- [ ] Testar o encoder AMD/AMF na RX 7600 real via cliente nativo (LanHouse Native/
+      moonlight-qt), comparando com o comportamento HEVC_AMF/H.264 já documentado no
+      `host-apollo`. Em andamento (2026-08-21).
+- [x] **WebRTC nativo — aprovado (2026-08-21).** Testado em LAN direto do navegador
+      (`/stream`), conexão real com o host de teste:
+      - H.264 — 60fps, 10-14ms de latência.
+      - HEVC (H.265) — 60fps, 10-14ms de latência, 1080p.
+      - AV1 — **quebrado**: tela rosa/magenta com FPS caindo de 60 pra ~21-25. Mesmo
+        padrão de sintoma (corrupção de crominância) documentado num caso parecido do
+        próprio Sunshine em outra plataforma/GPU
+        ([LizardByte/Sunshine#5028](https://github.com/LizardByte/Sunshine/issues/5028),
+        lá é NVIDIA/Linux/Vulkan, aqui é AMD/Windows) — mais provável ser imaturidade do
+        caminho de encode AV1 nessa base de código inteira do que um problema específico
+        de HDR/espaço de cor. H.264 e HEVC continuam sendo os dois codecs "de verdade"
+        viáveis; não vale a pena oferecer AV1 como opção por enquanto.
 
 ## Risco real descoberto (2026-08-21): o instalador do Vibepollo compartilha o serviço `ApolloService`
 
