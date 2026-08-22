@@ -280,3 +280,301 @@ confirmado com uma sessão de stream real recebendo o HUD de telemetria novo.
 
 **Se algum outro script/integração falar diretamente com o painel do Vibepollo (fora
 deste agente), checar se também usa `/api/login` — mesmo bug se aplica.**
+
+---
+
+# Histórico migrado de `host-apollo/BUILD_NOTES.md` (2026-08-22)
+
+O fork `host-apollo` foi removido do projeto — nenhum host ativo roda Apollo hoje (só
+`maquina-teste`, já em Vibepollo). Mas Vibepollo é um fork do Apollo e roda em cima da
+mesma base (mesmo serviço `ApolloService`, mesmo caminho `C:\Program Files\Apollo`, mesma
+config), então quase todo gotcha abaixo continua valendo — migrado aqui inteiro, sem
+cortes, pra não perder conhecimento operacional real (vários desses incidentes custaram
+horas pra diagnosticar). A seção de comandos de build/CMake é específica do Apollo em C++
+puro (o `host-apollo` tinha um build próprio, separado do instalador vendorizado) e não se
+aplica ao fluxo atual (que usa só o instalador do Vibepollo), mas foi mantida pro caso de
+alguém precisar recompilar esse fork antigo a partir do zero um dia.
+
+## Pré-requisitos de build do Apollo (histórico, não usado no fluxo atual)
+
+- MSYS2 (`winget install MSYS2.MSYS2`)
+- Dentro do MSYS2 UCRT64: boost, cmake, cppwinrt, curl-winssl, doxygen, graphviz, miniupnpc,
+  onevpl, openssl, opus, toolchain, MinHook, nlohmann_json, nsis — **sem nodejs**, ver abaixo.
+- Visual Studio Build Tools (workload C++)
+
+### Node.js: NÃO instalar o pacote `mingw-w64-ucrt-x86_64-nodejs` do MSYS2
+A própria documentação do Apollo (`docs/building.md:115-125`) avisa que o Node.js compilado
+pelo MSYS2 usa gcc-16, que tem uma regressão em `std::bad_weak_ptr` que derruba o Node
+durante a inicialização — quebra o target `web-ui` do CMake, que chama `npm install` via
+`find_program(NPM npm)`. Instalar o Node.js oficial separadamente (nodejs.org, LTS ou
+current, ou via nvm-windows) e garantir que `node.exe`/`npm` estejam no `PATH` **antes** de
+rodar `cmake`.
+
+## Comandos de build (histórico)
+
+```
+"C:\msys64\msys2_shell.cmd" -defterm -here -no-start -ucrt64 -c "cmake -B cmake-build-windows -G Ninja -S ."
+"C:\msys64\msys2_shell.cmd" -defterm -here -no-start -ucrt64 -c "ninja -C cmake-build-windows"
+```
+
+**Atenção ao escapar aspas dentro de `.bat`**: `cmd.exe` não suporta `\"` pra aspas
+aninhadas dentro de um argumento já entre aspas (isso quebra o parsing silenciosamente,
+gera "system cannot find the path specified" ou "syntax of the command is incorrect").
+Pra passar o `PATH` do Node.js (que tem espaço, "Program Files") pro `-c` do bash sem
+precisar de aspas duplas aninhadas, usar aspas simples (que o bash aceita e o `cmd.exe`
+ignora):
+```
+export PATH='/c/Program Files/nodejs':$PATH
+```
+
+**PATH do UCRT64 não herda o PATH do Windows por padrão** — `node`/`npm` (instalados
+oficialmente, fora do MSYS2) não aparecem dentro do `msys2_shell.cmd -ucrt64` a menos que
+sejam adicionados explicitamente ao `PATH` dentro do próprio comando `-c`.
+
+**`msys2_shell.cmd` se desacopla da sessão SSH não-interativa em invocações
+subsequentes** — na primeira vez que é chamado numa sessão SSH, roda de forma síncrona
+normalmente; numa segunda invocação encadeada (ex: `cmake` e depois `ninja` no mesmo
+`.bat`, via SSH), a sessão SSH costuma "voltar" (parecer ter terminado) assim que o
+segundo `msys2_shell.cmd` é disparado, mesmo com o processo continuando a rodar (e
+escrevendo no log) em segundo plano na máquina remota. Mitigação: rodar cada etapa
+(`cmake` e `ninja`) como uma chamada SSH separada, e confirmar a conclusão checando o
+arquivo de log / a existência do binário, não confiando no código de saída do SSH.
+
+## Bug upstream encontrado e corrigido: `cfg.profile` não existe em `config_t`
+
+Build parou em `src/video.cpp:830-831` com `'const struct video::config_t' has no member
+named 'profile'`. Rastreado até o commit upstream `c71ea0a8bc` ("fix(video): enabled
+profile and coder options for AMD AMF encoder", 2026-03-30, `ClassicOldSong/Apollo`) —
+esse commit adicionou um lambda de opção `"profile"` (SDR, encoder AMD AMF/H.264) que lê
+`cfg.profile`, mas nunca adicionou esse campo em `video::config_t` (que tem um comentário
+explícito proibindo adicionar campos no meio da struct — é o layout do protocolo de
+negociação RTSP do Moonlight).
+
+**Correção aplicada** (`src/video.cpp`): revertido só o bloco `{"profile"s, [...]}` de
+volta pra `{}` (era assim antes desse commit) — mantido o resto do commit (`"coder"s,
+&config::video.amd.amd_coder`), que é válido e não depende de `cfg.profile`. **Nota:**
+confirmado nesta mesma sessão (2026-08-21) que o Vibepollo já não tem esse bug — o código
+dele já corresponde ao comportamento corrigido, zero patch necessário.
+
+## SudoVDA — driver do monitor virtual
+
+Vem empacotado junto no instalador oficial (Apollo e Vibepollo), não faz parte de nenhum
+build via CMake. Repo separado: `SudoMaker/SudoVDA`.
+
+**Assinatura do driver:** é assinado por atestação da Microsoft (Windows Indirect Display
+Driver / IddCx oficial), não precisa de modo de teste nem desativar verificação de
+assinatura.
+
+**Causa real do bug conhecido `SudoVDA Driver status: Uninitialized` / Code 37** (issues
+#1024, #1044, #1360 do Apollo): o certificado de assinatura de versões antigas do driver
+**expira** com o tempo. Correção: sempre usar o instalador/release **mais recente** — não
+é um problema de configuração nossa.
+
+**Config do driver** (registro, não no `sunshine.conf`), em
+`HKEY_LOCAL_MACHINE\SOFTWARE\SudoMaker\SudoVDA` (criar a chave se não existir):
+- `gpuName` [STRING] — GPU que o adaptador virtual usa (default: escolhe a com mais VRAM)
+- `maxMonitors` [DWORD] — máximo de monitores virtuais (default 10)
+- `watchdog` [DWORD] — timeout em segundos (default 3, 0 desativa)
+- `sdrBits`/`hdrBits` [DWORD] — profundidade de cor SDR/HDR
+
+Mudança nesses valores exige recarregar o driver ou reiniciar — e se o host estiver com o
+driver aberto, precisa fechar antes de recarregar.
+
+## Credenciais do painel web via `--creds`
+
+`sunshine.exe` tem um subcomando `creds` pra configurar usuário/senha sem passar pelo
+assistente do navegador, mas **precisa do prefixo `--`** (`--creds <user> <pass>`, não
+`creds <user> <pass>`) — sem o prefixo, o parser de argumentos (só reconhece flags que
+começam com `--`) ignora o argumento e o binário cai no fluxo normal de inicialização do
+servidor completo, que numa sessão SSH não-interativa falha repetidamente tentando sondar
+displays (`ERROR_INVALID_PARAMETER`) sem nunca terminar. Com o prefixo certo, `--creds` é
+despachado antes de qualquer inicialização de display/plataforma e retorna na hora, sem
+precisar de sessão interativa.
+
+## Incidente 2026-08-15: reboot não recuperava o serviço sozinho + reinstalação perdeu pareamentos
+
+Dois problemas encadeados na Máquina de Teste, descobertos ao tentar cadastrar um jogo novo
+(eFootball) e testar o fluxo completo pela primeira vez depois de vários reboots remotos.
+
+### Sintoma 1 — depois de reiniciar a máquina, o painel web (porta 47990) nunca voltava
+
+**Causa raiz (confirmada):** a máquina não tinha login automático do Windows configurado.
+Um `Restart-Computer` remoto deixa a máquina parada na tela de login (mesmo sem senha, o
+Windows ainda espera um clique/Enter) — sem sessão de desktop interativa, o host nunca
+termina de inicializar a captura de tela, e a porta do painel nunca abre. `query session`
+via SSH não-interativo dá falso negativo (sempre vazio) mesmo com sessão real ativa —
+`Get-Process explorer` é o jeito confiável de checar isso remotamente.
+
+**Correção:** `AutoAdminLogon=1` no registro
+(`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon`), com `DefaultUserName` e
+`DefaultPassword` vazio (a conta Administrator não tem senha mesmo). Validado com um reboot
+completo do zero — porta 47990 respondendo já na primeira checagem pós-boot.
+
+### Sintoma 2 — depois de resetar as credenciais do painel (`--creds`), o serviço ficava travado
+
+Ao tentar resetar a senha esquecida do painel web, o processo de `Stop-Service` + `--creds`
++ `Start-Service`, repetido algumas vezes com `Stop-Process -Force` no meio, deixou o
+serviço num estado onde o processo ficava de pé mas a porta 47990 nunca abria — o log
+mostrava negociação de encoder se repetindo indefinidamente a cada ~20s, sem nenhuma
+conexão de rede real nas portas do GameStream.
+
+**Causa raiz: não totalmente confirmada.** A suspeita mais forte (não provada) é que os
+`Stop-Process -Force` no meio do reset de credenciais corromperam algum estado interno do
+serviço. **Isso fica em aberto — se acontecer de novo, não repetir a mesma sequência de
+force-kill.**
+
+**Correção aplicada (contorno, não causa-raiz):** desinstalação completa + remoção manual
+de `C:\Program Files\Apollo` (o instalador não limpa a config sozinho) + reinstalação do
+instalador vendorizado (hash validado, copiado via `scp` da cópia local em `vendor/`, não
+baixado de novo da internet). Resolveu de vez, sobreviveu a um reboot completo depois.
+
+### O que se perde numa reinstalação, e por quê
+
+Apagar `C:\Program Files\Apollo\config` inteiro (necessário pra garantir um estado
+realmente limpo) remove tudo que não vive no Supabase:
+
+1. **Os pareamentos de cliente** (`sunshine_state.json` → `root.named_devices`) — cada um é
+   um certificado TLS confiado por essa instalação específica. Sem eles, qualquer cliente
+   que tente conectar precisa parear de novo do zero.
+2. **A identidade da própria máquina** (`root.uniqueid`) — muda a cada reinstalação. O
+   campo `hosts.moonlight_host_id` no Supabase fica apontando pro valor antigo (obsoleto)
+   até ser corrigido manualmente.
+3. **O cadastro dos jogos** (`apps.json`) — precisa ser recriado. O catálogo do lado do
+   `lanhouse-web` (tabela `games`) não é afetado — vive no Supabase, não na máquina.
+4. **Usuário/senha do painel web** — resetados no processo.
+
+### Plano de prevenção (checklist obrigatório em toda instalação nova de host)
+
+1. `AutoAdminLogon` configurado e validado com um reboot completo real (não confiar que "o
+   instalador resolve sozinho").
+2. Credenciais do painel web definidas via `--creds` com um valor **padrão único do
+   projeto** (não inventar uma nova a cada vez) — guardar esse valor junto com o resto dos
+   segredos do projeto (mesmo lugar do `HOST_TICKET_SECRET`), não só na cabeça de quem
+   configurou.
+3. Scheduled Task do `lanhouse-host-agent.ps1` criada **e testada rodando uma vez na hora**
+   (`schtasks /run`), não só criada e assumida como funcional.
+4. Nunca usar `Stop-Process -Force` em `sunshine`/`sunshinesvc` como parte de rotina —
+   preferir sempre `Stop-Service` → esperar → `Start-Service`, e se travar, reiniciar a
+   máquina inteira em vez de forçar kill de processo.
+5. Antes de qualquer reinstalação/limpeza de config, fazer backup de
+   `sunshine_state.json` e `apps.json` — preserva referência rápida pra recriar os apps sem
+   digitar tudo de novo, e permite comparar o `uniqueid` antigo vs. novo.
+6. Depois de qualquer reinstalação: `hosts.moonlight_host_id` atualizado, `host_games`
+   conferidos, reparear todos os clientes de teste, **`sunshine.conf` com a resolução fixa
+   do monitor virtual restaurada** e a regra de firewall recriada (os dois se perdem numa
+   reinstalação do zero e viraram parte fixa deste checklist justamente por já terem sido
+   esquecidos uma vez).
+
+## Firewall do Windows — regra nunca criada automaticamente
+
+O instalador **não cria regra de firewall sozinho**. O painel web (47990) pode até
+funcionar via acesso administrativo (Tailscale, que ignora o Firewall do Windows na
+prática) — mas o app nativo conecta pelo IP da LAN direto (`hosts.local_ip`), e sem regra
+de firewall o handshake RTSP falha (`Falha ao iniciar RTSP handshake: Erro -1`, portas TCP
+48010 / UDP 48000 / UDP 48010) mesmo com a porta escutando do lado do servidor.
+
+**Correção:** o próprio instalador já vem com um script pronto — `C:\Program
+Files\Apollo\scripts\add-firewall-rule.bat` (tem também um `delete-firewall-rule.bat` pra
+desfazer). Rodar como Administrator:
+
+```powershell
+Start-Process -FilePath "C:\Program Files\Apollo\scripts\add-firewall-rule.bat" -Verb RunAs -Wait -WindowStyle Hidden
+```
+
+Cria 4 regras (entrada, permitir, todos os perfis de rede). **Fazer isso em toda máquina
+nova, logo depois de instalar** — antes ficava mascarado porque só testávamos o painel via
+Tailscale, nunca o app nativo de fora do próprio host. **Nota:** o MSI do Vibepollo cria
+essas regras automaticamente — só rodar este script manualmente se confirmar que faltam.
+
+## Auto HDR do Windows derrubando a sessão ~15s depois de conectar
+
+Sessão conectava, jogo abria, e caía sozinha ~15s depois, sempre com `HDR reverted for
+display \\.\DISPLAY1` seguido de `Process terminated` no log — mesmo com a resolução do
+monitor virtual já corretamente travada.
+
+**Causa raiz real:** um **monitor físico de verdade conectado** na máquina de teste (com
+EDID real e suporte a HDR nativo). O host reconfigura esse monitor físico a cada sessão
+(não usa os adaptadores virtuais do SudoVDA, que existem mas ficam inativos) — e o **Auto
+HDR do Windows** liga HDR sozinho no monitor real durante o jogo (feature nativa do
+Windows 11, independente da config do host, que já pedia `hdr_state: Disabled`
+explicitamente sem efeito). O host detecta a mudança de HDR ao vivo e derruba a sessão
+como proteção.
+
+**Correção:**
+1. Desligar o Auto HDR do Windows via registro
+   (`HKCU:\Software\Microsoft\DirectX\UserGpuPreferences`, valor
+   `DirectXUserGlobalSettings` precisa conter `AutoHDREnable=0;`).
+2. **Desconectar o monitor físico da máquina** — é a correção mais robusta e é como um
+   servidor de cloud gaming de verdade deveria estar configurado (sem monitor físico
+   nenhum, só o virtual do SudoVDA). Não afeta acesso remoto via SSH.
+
+**Lição pro Maquinista:** todo host novo deveria já subir **sem monitor físico conectado**
+por padrão — item do checklist de adequação (Etapa 1-2), não uma correção descoberta
+depois que já deu problema.
+
+## Sessão caindo sempre ~15s depois de conectar — causa real (não confundir com o Auto HDR acima)
+
+Depois de descartar resolução fixa, monitor físico/Auto HDR, `wait-all` e o watchdog do
+SudoVDA, a queda em ~15s **exatos** todo teste continuava idêntica. Root-caused ao vivo,
+acompanhando `sunshine.log` em tempo real: o servidor manda pro cliente `Server notified
+termination reason: 0x80030023` (`NVST_DISCONN_SERVER_TERMINATED_CLOSED` — encerramento
+**gracioso**, não é erro/crash) e imediatamente depois `Process terminated` no lado do
+host. Rastreado até `src/stream.cpp`, no loop principal de sessão (`if
+(proc::proc.running() == 0 && !has_session_awaiting_peer) { break; }`).
+
+**Causa raiz:** `apps.json` usava o campo `"cmd": "steam://rungameid/<appid>"` com
+`"auto-detach": true`. Mas `auto-detach` só faz `proc_t::running()` tratar a sessão como
+"rodando pra sempre" (`placebo = true`) **se o processo rastreado sair dentro de 5 segundos
+do lançamento**. O processo que o Windows mantém vivo pra despachar a URI `steam://` pra
+dentro da Steam já em execução leva, na prática, um pouco mais que 5 segundos até sair de
+vez — então essa janela de tolerância nunca chegava a ser aplicada, e o host concluía
+(errado) que o app tinha fechado, mesmo com o jogo rodando normalmente o tempo todo.
+
+**Correção:** usar o campo `"detached": ["steam://rungameid/<appid>"]` em vez de `"cmd"` +
+`"auto-detach"` — mesmo padrão do app nativo "Steam Big Picture" (`"detached":
+["steam://open/bigpicture"]`). Com `cmd` vazio, `proc_t::running()` nunca chega a rastrear
+processo nenhum — a sessão passa a durar enquanto o **cliente** estiver conectado, não
+enquanto um processo específico do lançamento continuar vivo. Aplicado em
+`vendor/apps-template.json` pros jogos do MVP.
+
+**Becos sem saída investigados antes de achar isso (não repetir):**
+- Resolução do monitor virtual ausente (real, corrigido, mas não era a causa desse bug).
+- Monitor físico + Auto HDR do Windows (real, corrigido — mas o mesmo padrão de queda em
+  ~15s persistiu mesmo com o monitor físico desconectado, provando que não era isso).
+- `wait-all: true` interagindo mal com `auto-detach` — mudou pra `false`, não resolveu
+  sozinho (mas manteve como `false` no fix final por ainda fazer sentido).
+- Watchdog do driver SudoVDA ausente — restaurado, não resolveu.
+- Timer de "segurar ESC 10s pra sair" — instrumentado com log de diagnóstico, confirmado
+  que nunca disparava durante as quedas.
+- Steam levando tempo pra abrir do zero — descartado, a Steam já estava rodando
+  persistentemente o tempo todo.
+
+## Investigação (2026-08-16/17): pipeline de captura reiniciando sozinho no meio da sessão — indício forte contra HEVC_AMF
+
+Sintoma relatado pelo usuário: qualidade de stream boa num dia, "lagada" no dia seguinte,
+sem nenhuma mudança de configuração entre um teste e outro.
+
+**Achado concreto, confirmado 2x em `sunshine.log` no mesmo dia, mesmo padrão nas duas
+vezes:** o pipeline de captura/encoder inteiro (`Creating encoder [hevc_amf]`, com todo o
+bloco de negociação) é recriado do zero **no meio de sessões que continuam conectadas**
+(uma vez 48s depois de conectar, outra vez 20min depois) — e nas duas vezes isso aconteceu
+pouco antes da sessão cair de vez. Numa sessão saudável, a negociação de encoder acontece
+uma vez só, no início.
+
+**Descartado como causa direta:** versão do driver AMD, Windows Update, uso de CPU, tela
+travando/protetor de tela (zero eventos 4800-4803 de bloqueio no momento exato,
+confirmado via auditoria ligada de propósito), qualquer evento em System/Application log —
+o Windows genuinamente não registra nada, a decisão de recriar acontece só dentro do
+próprio host/AMF.
+
+**Causa provável encontrada (2026-08-17):** o usuário trocou o codec de vídeo de
+Automático (que sempre resolvia pra `hevc_amf`, o único codec presente em todo log
+analisado até aqui, inclusive nos momentos do reinício) pra **H.264 manualmente** — sessão
+rodou lisa, sem nenhuma travada. Forte indício de que o problema é específico do encoder
+**HEVC via AMF** nesta GPU AMD (RX 7600, driver 31.0.21001.16014), não de tela/rede/Windows
+como cogitado antes. Não confirmado com múltiplos testes (uma sessão só), mas bate
+exatamente com o padrão: toda ocorrência do bug envolvia `hevc_amf` ativo. **Ver seção mais
+acima sobre WebRTC testado em 2026-08-21 (H.264 e HEVC ambos 60fps/10-14ms sem esse
+problema aparecer) e sobre o AV1 quebrado (tela rosa) — este bug do HEVC_AMF reiniciando
+segue sem causa raiz 100% confirmada, mas é uma das razões concretas que motivou avaliar o
+Vibepollo em paralelo (ver decisão de adoção mais acima neste arquivo).**
