@@ -258,3 +258,25 @@ acima) e o certificado real via win-acme+Cloudflare (plano já documentado); (b)
 credencial do painel guardada do lado do servidor) em vez de eu gerar manualmente; (c) uma
 página/cliente nosso que fale com essas rotas no lugar da SPA do Vibepollo (ou aceitar
 carregar a SPA dele direto, já que ela não exige nenhuma autenticação pra servir o HTML).
+
+### Gotcha (2026-08-22): rota de login mudou de `/api/login` pra `/api/auth/login`
+
+Vibepollo renomeou a rota de login do painel — `src/confighttp.cpp` registra
+`"^/api/auth/login$"` via `register_api_route`, não mais `"^/api/login"` via
+`server.resource[...]` como no Apollo antigo (`host-apollo/src/confighttp.cpp`, ainda
+com o nome velho). Achado ao investigar por que `lanhouse-host-agent.ps1` (que faz
+pareamento automático de clientes novos) nunca tinha sido revalidado contra o Vibepollo
+depois da troca de host padrão em 2026-08-21 — a função `Connect-Apollo` do agente ainda
+chamava `/api/login`, recebia 400 Bad Request, e todo pareamento de cliente novo numa
+máquina Vibepollo falhava silenciosamente (PIN nunca era submetido, cliente via "Failed
+to connect" sem log nenhum do lado do host explicando o motivo real).
+
+Corrigido no próprio `lanhouse-host-agent.ps1`: tenta `/api/auth/login` primeiro, cai pra
+`/api/login` se falhar — o script continua servindo as duas bases (Apollo e Vibepollo),
+como o cabeçalho do arquivo já promete. Validado testando a sequência completa
+(login + cookie + `/api/pin` + `/api/clients/update` pra conceder permissão de launch)
+manualmente contra o Vibepollo real nesta máquina — sucesso ponta a ponta, inclusive
+confirmado com uma sessão de stream real recebendo o HUD de telemetria novo.
+
+**Se algum outro script/integração falar diretamente com o painel do Vibepollo (fora
+deste agente), checar se também usa `/api/login` — mesmo bug se aplica.**
