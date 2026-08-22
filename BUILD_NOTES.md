@@ -281,6 +281,21 @@ confirmado com uma sessão de stream real recebendo o HUD de telemetria novo.
 **Se algum outro script/integração falar diretamente com o painel do Vibepollo (fora
 deste agente), checar se também usa `/api/login` — mesmo bug se aplica.**
 
+### Gotcha (2026-08-22): permissão de launch concedida ao cliente errado quando nomes colidem
+
+Achado logo depois do fix acima, testando o pareamento automático de verdade contra o
+Vibepollo real: o segundo dispositivo pareado (mesmo rótulo fixo "LanHouse Native" que
+todo cliente reporta) recebeu 403 "lacks the Launch applications permission" ao tentar
+jogar, mesmo com o log do `lanhouse-host-agent.ps1` mostrando "Pareado com sucesso" sem
+nenhum aviso de falha.
+
+Causa: quando já existe um pareamento com o mesmo nome, o Vibepollo desambigua sozinho
+anexando `" (2)"`, `" (3)"` etc ao criar o novo — mas `Grant-FullPermissions` buscava por
+nome **exato**, então acertava o cliente antigo (que já tinha permissão) em vez do que
+tinha acabado de parear. Corrigido casando nome exato OU `"$ClientLabel (N)"`, pegando o
+de `last_seen` mais recente entre os que baterem (o que acabou de parear é sempre o mais
+recente).
+
 ---
 
 # Histórico migrado de `host-apollo/BUILD_NOTES.md` (2026-08-22)
