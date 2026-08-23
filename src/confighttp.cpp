@@ -598,10 +598,14 @@ namespace confighttp {
   }
 
   /**
-   * @brief Get the CORS origin for localhost (no wildcard).
+   * @brief Get the CORS origin (no wildcard) - config::nvhttp.webrtc_allowed_origin
+   * if set, otherwise this panel's own https://localhost:<port>.
    * @return The CORS origin string.
    */
   static std::string get_cors_origin() {
+    if (!config::nvhttp.webrtc_allowed_origin.empty()) {
+      return config::nvhttp.webrtc_allowed_origin;
+    }
     std::uint16_t https_port = net::map_port(PORT_HTTPS);
     return std::format("https://localhost:{}", https_port);
   }

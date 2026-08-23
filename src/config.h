@@ -294,6 +294,14 @@ namespace config {
     std::string vibeshine_file_state;
 
     std::string external_ip;
+
+    // CORS origin allowed to call the /api/webrtc/* routes from outside this
+    // host's own panel - e.g. a browser-based SaaS front-end minting a
+    // scoped per-session token server-side and driving the WebRTC session
+    // from its own domain instead of this panel's UI. Empty means "no
+    // override", get_cors_origin() falls back to https://localhost:<port>
+    // (the pre-existing, panel-only behavior).
+    std::string webrtc_allowed_origin;
   };
 
   struct input_t {
