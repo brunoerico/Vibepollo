@@ -182,7 +182,18 @@ function Resolve-PackageVersionFromGit {
         return ''
     }
 
-    $describe = & $git.Source -C $Path describe --tags --long --match 'v[0-9]*' 2>$null
+    # $ErrorActionPreference = 'Stop' (top of file) turns git's stderr write on
+    # a non-zero exit (e.g. "No names found, cannot describe anything" when no
+    # reachable tag matches) into a terminating PowerShell exception, even
+    # though the exit-code check right below already handles that case
+    # gracefully - without try/catch here, the exception fires first and the
+    # whole build aborts instead of just falling back to an empty version.
+    $describe = $null
+    try {
+        $describe = & $git.Source -C $Path describe --tags --long --match 'v[0-9]*' 2>$null
+    } catch {
+        $describe = $null
+    }
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($describe)) {
         return ''
     }
@@ -190,7 +201,12 @@ function Resolve-PackageVersionFromGit {
     if ($describe -match '^v?([0-9]+\.[0-9]+\.[0-9]+)(?:-([0-9]+)-g[0-9a-f]+)?(?:-.+)?$') {
         $baseVersion = $Matches[1]
         $commitsSinceTag = if ($Matches.Count -gt 2 -and $Matches[2]) { [int]$Matches[2] } else { 0 }
-        $dirty = & $git.Source -C $Path status --porcelain 2>$null
+        $dirty = $null
+        try {
+            $dirty = & $git.Source -C $Path status --porcelain 2>$null
+        } catch {
+            $dirty = $null
+        }
         if ($LASTEXITCODE -eq 0 -and $dirty) {
             $commitsSinceTag++
         }
@@ -238,7 +254,12 @@ function Resolve-NextLocalDirtyPackageVersion {
         return $Version
     }
 
-    $dirty = & $git.Source -C $LibRoot status --porcelain 2>$null
+    $dirty = $null
+    try {
+        $dirty = & $git.Source -C $LibRoot status --porcelain 2>$null
+    } catch {
+        $dirty = $null
+    }
     if ($LASTEXITCODE -ne 0 -or -not $dirty -or
         [string]::IsNullOrWhiteSpace($ExistingInfPath) -or
         -not (Test-Path -LiteralPath $ExistingInfPath -PathType Leaf)) {
@@ -291,7 +312,12 @@ function Resolve-DriverVerDateFromGit {
 
     $git = Get-Command git -ErrorAction SilentlyContinue
     if ($git) {
-        $date = & $git.Source -C $Path log -1 '--format=%cd' '--date=format:%m/%d/%Y' 2>$null
+        $date = $null
+        try {
+            $date = & $git.Source -C $Path log -1 '--format=%cd' '--date=format:%m/%d/%Y' 2>$null
+        } catch {
+            $date = $null
+        }
         if ($LASTEXITCODE -eq 0 -and $date -match '^[0-9][0-9]/[0-9][0-9]/[0-9][0-9][0-9][0-9]$') {
             return $date
         }
