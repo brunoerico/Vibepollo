@@ -1306,6 +1306,23 @@ namespace webrtc_stream {
       return data;
     }
 
+    // Relative mouse movement (Pointer Lock deltas from the browser player) -
+    // NV_REL_MOUSE_MOVE_PACKET already exists in the classic GameStream
+    // protocol (moonlight-qt's native client has always used it for FPS-style
+    // mouselook, which absolute positioning can't do), just never wired up on
+    // the WebRTC bridge's JSON input path before.
+    std::vector<uint8_t> make_rel_mouse_move_packet(int dx, int dy) {
+      NV_REL_MOUSE_MOVE_PACKET packet {};
+      packet.header.size = util::endian::big<std::uint32_t>(sizeof(packet) - sizeof(packet.header.size));
+      packet.header.magic = util::endian::little<std::uint32_t>(MOUSE_MOVE_REL_MAGIC_GEN5);
+      packet.deltaX = util::endian::big(static_cast<int16_t>(std::clamp(dx, -32768, 32767)));
+      packet.deltaY = util::endian::big(static_cast<int16_t>(std::clamp(dy, -32768, 32767)));
+
+      std::vector<uint8_t> data(sizeof(packet));
+      std::memcpy(data.data(), &packet, sizeof(packet));
+      return data;
+    }
+
     std::vector<uint8_t> make_mouse_button_packet(int button, bool release) {
       NV_MOUSE_BUTTON_PACKET packet {};
       packet.header.size = util::endian::big<std::uint32_t>(sizeof(packet) - sizeof(packet.header.size));
@@ -1514,6 +1531,12 @@ namespace webrtc_stream {
         const double x = message.value("x", 0.0);
         const double y = message.value("y", 0.0);
         input::passthrough(input_ctx, make_abs_mouse_move_packet(x, y), input_permission);
+        return;
+      }
+      if (type == "mouse_move_rel") {
+        const int dx = message.value("dx", 0);
+        const int dy = message.value("dy", 0);
+        input::passthrough(input_ctx, make_rel_mouse_move_packet(dx, dy), input_permission);
         return;
       }
       if (type == "mouse_down" || type == "mouse_up") {
