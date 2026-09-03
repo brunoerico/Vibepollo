@@ -9,7 +9,7 @@
 namespace confighttp::policy {
   AuthResult RequestAuthPolicy::make_error(StatusCode code, const std::string &error) const {
     AuthResult result {false, code, {}, {}};
-    result.headers.emplace("Access-Control-Allow-Origin", std::format("https://localhost:{}", _dependencies.https_port()));
+    result.headers.emplace("Access-Control-Allow-Origin", _dependencies.cors_origin());
     if (!error.empty()) {
       result.body = nlohmann::json {{"status", false}, {"error", error}}.dump();
       result.headers.emplace("Content-Type", "application/json");

@@ -1133,9 +1133,16 @@ namespace confighttp {
     append_expiry(refresh_cookie, issued.refresh_ttl);
     response.headers.emplace("Set-Cookie", refresh_cookie);
 
-    // Set CORS header for localhost only (no wildcard), dynamically set port
-    std::uint16_t https_port = net::map_port(nvhttp::PORT_HTTPS);
-    std::string cors_origin = std::format("https://localhost:{}", https_port);
+    // CORS header: webrtc_allowed_origin override if configured, else
+    // localhost-only (no wildcard) with the dynamically-set port - see
+    // get_cors_origin() below for the WAN/browser-player rationale.
+    std::string cors_origin;
+    if (!config::nvhttp.webrtc_allowed_origin.empty()) {
+      cors_origin = config::nvhttp.webrtc_allowed_origin;
+    } else {
+      std::uint16_t https_port = net::map_port(nvhttp::PORT_HTTPS);
+      cors_origin = std::format("https://localhost:{}", https_port);
+    }
     response.headers.emplace("Access-Control-Allow-Origin", cors_origin);
 
     return response;
@@ -1268,6 +1275,21 @@ namespace confighttp {
   }
 
   namespace {
+    // Mirrors confighttp.cpp's own get_cors_origin(): webrtc_allowed_origin
+    // (config, empty by default) overrides the https://localhost:<port>
+    // fallback, so a browser calling /api/webrtc/* or /api/token from
+    // outside this host's own panel (e.g. lanhouse-web's WAN player) gets a
+    // CORS origin it actually satisfies. Duplicated here (not shared via
+    // confighttp.h) because this module's auth/session responses are built
+    // independently of confighttp.cpp's route handlers.
+    std::string get_cors_origin() {
+      if (!config::nvhttp.webrtc_allowed_origin.empty()) {
+        return config::nvhttp.webrtc_allowed_origin;
+      }
+      std::uint16_t https_port = net::map_port(confighttp::PORT_HTTPS);
+      return std::format("https://localhost:{}", https_port);
+    }
+
     policy::RequestAuthPolicy make_request_auth_policy() {
       policy::RequestAuthDependencies dependencies;
       dependencies.remote_allowed = [](const std::string &address) { return net::from_address(address) <= http::origin_web_ui_allowed; };
@@ -1280,12 +1302,8 @@ namespace confighttp {
       dependencies.decode_base64 = [](const std::string &encoded) { return SimpleWeb::Crypto::Base64::decode(encoded); };
       dependencies.cookie_unescape = [](const std::string &value) { return http::cookie_unescape(value); };
       dependencies.https_port = [] { return net::map_port(confighttp::PORT_HTTPS); };
+      dependencies.cors_origin = [] { return get_cors_origin(); };
       return policy::RequestAuthPolicy(std::move(dependencies));
-    }
-
-    std::string get_cors_origin() {
-      std::uint16_t https_port = net::map_port(confighttp::PORT_HTTPS);
-      return std::format("https://localhost:{}", https_port);
     }
   }  // namespace
 

@@ -12,6 +12,7 @@ namespace confighttp::policy {
     boost::function<std::string(const std::string &)> decode_base64;
     boost::function<std::string(const std::string &)> cookie_unescape;
     boost::function<std::uint16_t()> https_port;
+    boost::function<std::string()> cors_origin;
   };
 
   class RequestAuthPolicy {
