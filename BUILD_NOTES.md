@@ -638,3 +638,37 @@ de alguém checar o header de fato.
 Binário vendorizado atual: `vendor/VibepolloSetup-v1.18.4-stable.3-webrtc-cors-patch.exe`,
 sha256 `5f172685a25331647c823e6ac3aa79c4b82b024008db59781e5db788f2840143`, buildado do
 commit `9ad86b91` via `gh workflow run ci.yml --repo brunoerico/Vibepollo --ref master`.
+
+## Terceiro bug de CORS: faltava handler OPTIONS (2026-09-03) — supersede o binário acima
+
+Testando o player do navegador de verdade (não `curl`) contra o binário
+`webrtc-cors-patch` acima: `Access-Control-Allow-Origin` já vinha certo, mas o navegador
+nunca chegou a mandar o POST real — `net::ERR_EMPTY_RESPONSE` em
+`/api/webrtc/sessions`. Causa: o POST carrega `Content-Type: application/json` +
+`Authorization: Bearer <token>`, nenhum dos dois é CORS-safelisted, então todo navegador
+manda um preflight `OPTIONS` antes do POST de verdade — e `confighttp.cpp` não tinha
+handler nenhum pra `OPTIONS`, nem em rota específica nem em `default_resource` (só
+DELETE/PATCH/POST/PUT/GET). Sem handler casando, a conexão fechava sem resposta HTTP
+nenhuma — daí o `ERR_EMPTY_RESPONSE`, indistinguível de um crash até ler o código de
+roteamento.
+
+**Correção** (commit `5c914517`): `server.default_resource["OPTIONS"]` respondendo `204 No
+Content` com os mesmos headers de `add_cors_headers()` já usados no resto da API.
+
+Esse build também inclui o commit `829b6204` (reescreve candidato ICE `typ host` IPv4 pro
+IP de `webrtc_public_ip` quando configurado — necessário pra WAN de verdade, mas
+provavelmente irrelevante em `maquina-teste` já que o `local_ip` dela já é o IP público
+direto, sem NAT no meio).
+
+**Binário vendorizado atual (substitui o `-cors-patch` acima)**:
+`vendor/VibepolloSetup-v1.18.4-stable.3-webrtc-cors-ice-fix.exe`, sha256
+`0bb07418d18369493f66ae452e3e34627471977c9450e6411605b107471a9590`, buildado do commit
+`5c914517` via `gh workflow run ci.yml --repo brunoerico/Vibepollo --ref master` (run
+`33710544137`).
+
+**Status: build validado, instalação/teste ponta a ponta ainda PENDENTE** — a
+`maquina-teste` foi desligada pelo usuário antes de dar tempo de instalar. Próximos
+passos quando a máquina voltar: instalar este instalador (mesmo procedimento de sempre —
+parar `ApolloService`, rodar `/S`, confirmar serviço `Running`), depois testar o player de
+verdade pelo navegador (não só `curl`) contra `/api/webrtc/sessions` a partir do domínio
+real do site.
