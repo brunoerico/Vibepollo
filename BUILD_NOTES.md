@@ -787,3 +787,41 @@ descartado, é mudança só de código de aplicação, sem driver envolvido). Co
 `ApolloService` `Running`, porta 47990 respondendo, `uniqueid` e configs de
 CORS/CSRF/webrtc_public_ip intactos. **Teste ponta a ponta pelo navegador (travar o
 cursor de verdade, verificar CS2 mirando) ainda pendente.**
+
+## Runbook: rotação de emergência da credencial admin do painel (2026-09-03)
+
+Hoje a credencial do painel (`VIBEPOLLO_ADMIN_USERNAME`/`VIBEPOLLO_ADMIN_PASSWORD` na
+Vercel) é **uma só pra toda a frota** - não existe por host. Se vazar, compromete todo
+host de uma vez. Não é o modelo ideal em longo prazo (ver "Caminhos pra 1000 clientes",
+item 5 - credencial por host, atrelada ao provisionamento automatizado que ainda não
+existe), mas até lá, se precisar trocar por suspeita de vazamento ou rotina, o
+procedimento é:
+
+1. **Escolher a nova credencial** - mesmo usuário (`lanhouse`) ou novo, senha forte nova.
+2. **Pra cada host da frota**, via SSH (técnica base64, ver `maquinista.md`):
+   ```powershell
+   Stop-Service ApolloService
+   Start-Sleep -Seconds 2
+   & "C:\Program Files\Apollo\sunshine.exe" --creds <user> <nova-senha>
+   Start-Sleep -Seconds 1
+   Start-Service ApolloService
+   Start-Sleep -Seconds 15
+   (Get-NetTCPConnection -State Listen -LocalPort 47990 -ErrorAction SilentlyContinue) -ne $null
+   ```
+   Confirmar `True` antes de seguir pro próximo host - **nunca** trocar a env var da
+   Vercel antes de confirmar que TODOS os hosts já estão com a credencial nova, ou todo
+   host ainda não migrado para de mintar token (`issueWebRtcToken` chamando `POST
+   /api/token` com a credencial errada = 401 silencioso pro cliente, "não foi possível
+   conectar ao host").
+3. **Só depois de confirmar os 2 hosts** (ou todos, conforme a frota crescer): atualizar
+   `VIBEPOLLO_ADMIN_USERNAME`/`VIBEPOLLO_ADMIN_PASSWORD` na Vercel (todos os ambientes -
+   Production, e Preview/Development se usados pra testar contra hosts reais) e redeployar
+   `lanhouse-web`.
+4. **Validar de verdade**: testar um login real (jogar um jogo) depois do redeploy, não só
+   confiar que o deploy passou - mesma lição do bug de CORS de hoje ("build passou" não é
+   evidência de que funciona).
+
+**Risco aceito por enquanto**: entre o passo 2 (hosts trocados) e o passo 3 (env var
+atualizada), qualquer sessão nova falha em mintar token até a env var acompanhar - é uma
+janela de indisponibilidade real, não cosmética. Fazer isso fora de horário de pico
+enquanto a frota for pequena o suficiente pra trocar todos os hosts em poucos minutos.
