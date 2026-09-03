@@ -666,9 +666,21 @@ direto, sem NAT no meio).
 `5c914517` via `gh workflow run ci.yml --repo brunoerico/Vibepollo --ref master` (run
 `33710544137`).
 
-**Status: build validado, instalação/teste ponta a ponta ainda PENDENTE** — a
-`maquina-teste` foi desligada pelo usuário antes de dar tempo de instalar. Próximos
-passos quando a máquina voltar: instalar este instalador (mesmo procedimento de sempre —
-parar `ApolloService`, rodar `/S`, confirmar serviço `Running`), depois testar o player de
-verdade pelo navegador (não só `curl`) contra `/api/webrtc/sessions` a partir do domínio
-real do site.
+**Status (2026-09-03): instalado e validado via curl.** Instalado com `/qn` (não `/S` —
+ver "Runbook de teste seguro" acima, é o flag MSI-silencioso que já tinha sido validado
+preservando config 100%). Confirmado depois: `ApolloService` `Running`, porta 47990
+respondendo, `uniqueid` e `webrtc_allowed_origin`/`webrtc_public_ip` intactos (mesmo
+pareamento de antes). Preflight real testado direto (não só "instalou sem erro" — mesma
+lição do bug anterior):
+
+```
+curl -k -i -X OPTIONS https://186.196.69.131:47990/api/webrtc/sessions \
+  -H "Origin: https://lanhousecloudgaming.com.br" \
+  -H "Access-Control-Request-Method: POST" \
+  -H "Access-Control-Request-Headers: content-type,authorization"
+```
+
+devolveu `204 No Content` com `Access-Control-Allow-Origin: https://lanhousecloudgaming.com.br`
+— o handler OPTIONS está respondendo certo. **Ainda falta**: o teste de verdade ponta a
+ponta pelo navegador (o preflight passando não garante que o resto da negociação
+SDP/ICE funciona — só prova que o POST real agora chega a ser enviado).
