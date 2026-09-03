@@ -681,6 +681,45 @@ curl -k -i -X OPTIONS https://186.196.69.131:47990/api/webrtc/sessions \
 ```
 
 devolveu `204 No Content` com `Access-Control-Allow-Origin: https://lanhousecloudgaming.com.br`
-— o handler OPTIONS está respondendo certo. **Ainda falta**: o teste de verdade ponta a
-ponta pelo navegador (o preflight passando não garante que o resto da negociação
-SDP/ICE funciona — só prova que o POST real agora chega a ser enviado).
+— o handler OPTIONS está respondendo certo.
+
+## Quarto bug de CORS/auth: `csrf_allowed_origins` é uma allowlist separada de `webrtc_allowed_origin` (2026-09-03)
+
+Com o preflight já passando, o teste de verdade pelo navegador (celular Android, wifi de
+casa - primeiro teste de fora da rede local) chegou até o POST real de
+`/api/webrtc/sessions`, mas devolveu `400 {"error":"Missing CSRF token"}`. Toda rota
+POST/PUT/PATCH/DELETE registrada via `register_api_route` passa por
+`validate_csrf_token()` (`confighttp.cpp:1314`) - **checagem completamente independente**
+de `webrtc_allowed_origin`/`get_cors_origin()`, fácil de confundir porque as duas soam
+como "a mesma allowlist de origem".
+
+`validate_csrf_token()` deixa passar sem exigir token de CSRF só se `Origin` (ou
+`Referer`, como fallback) bater com `config::sunshine.csrf_allowed_origins` - que por
+padrão só contém `https://localhost`, `https://127.0.0.1`, `https://[::1]`
+(`config.cpp:2032`). Fora desse allowlist, exige um `X-CSRF-Token` obtido antes via `GET
+/api/csrf-token` - fluxo que o player do navegador nunca implementou, porque a API
+`/api/webrtc/*` é autenticada por Bearer token escopado (`issueWebRtcToken`), não por
+cookie de sessão - CSRF de verdade só é risco quando a credencial viaja automática via
+cookie, não quando é um header explícito que só o próprio JS da LanHouse consegue anexar.
+
+**Correção: config, não código.** Adicionado `csrf_allowed_origins` no `sunshine.conf` (é
+uma lista separada, formato `origem1,origem2`, cada uma precisa começar com `https://` -
+ver `list_string_f` em `config.cpp:1490`):
+
+```
+csrf_allowed_origins = https://lanhousecloudgaming.com.br,https://www.lanhousecloudgaming.com.br
+```
+
+Serviço reiniciado (`Stop-Service` → `Start-Service`, nunca `Stop-Process -Force`).
+Validado via curl - o erro mudou de `400 Missing CSRF token` pra `403 Forbidden: Token
+does not have permission` (usando um Bearer token falso de propósito só pra confirmar que
+a camada de CSRF deixou passar e a requisição chegou na checagem de auth real seguinte).
+
+**Lição pra próxima máquina** (`maquinista.md` deve cobrir isso na Etapa 5, junto com
+`webrtc_allowed_origin`): toda máquina nova precisa das **duas** chaves de origem no
+`sunshine.conf` - `webrtc_allowed_origin` (CORS) **e** `csrf_allowed_origins` (CSRF) -
+apontando pro domínio real do site. Uma sem a outra falha de formas diferentes e nada
+óbvias (`ERR_EMPTY_RESPONSE`/CORS bloqueado vs. `400 Missing CSRF token`).
+
+**Ainda falta**: o teste de verdade ponta a ponta pelo navegador (SDP/ICE/mídia) - até
+agora só confirmamos que o POST de criação de sessão é aceito.
