@@ -825,3 +825,37 @@ procedimento é:
 atualizada), qualquer sessão nova falha em mintar token até a env var acompanhar - é uma
 janela de indisponibilidade real, não cosmética. Fazer isso fora de horário de pico
 enquanto a frota for pequena o suficiente pra trocar todos os hosts em poucos minutos.
+
+## Primeira auditoria real do agente Fiscal (2026-09-03) - tudo confirmado, 1 achado
+
+Depois de criado, o Fiscal (novo agente de auditoria, separado do Maquinista por decisão
+do usuário - cada um com responsabilidade única) rodou pela primeira vez contra a
+`maquina-teste`, validando ao vivo (não só lendo config) todos os fixes de hoje:
+`uniqueid`, pareamento sem colisão, os 4 `moonlight_app_id` batendo por duas fontes
+independentes (`vibeshine_state.json` e `GET /api/apps` ao vivo), `virtual-display: true`
+nos 4 jogos, `csrf_allowed_origins`, `webrtc_public_ip`, DNS saudável, Steam online de
+verdade, heartbeat fresco. Tudo OK.
+
+**Único achado**: `webrtc_allowed_origin` só cobre o domínio apex
+(`lanhousecloudgaming.com.br`), não `www.` - diferente de `csrf_allowed_origins`, que já é
+lista e cobre os dois. Causa raiz: `webrtc_allowed_origin` é `std::string` único em
+`config.h`/`config.cpp` (`string_f`, não `list_string_f`), e pior - `get_cors_origin()` e
+`add_cors_headers()` em `confighttp.cpp` **nem recebem a request** hoje, então não têm
+como ecoar de volta a origem certa por chamada (exigência real do CORS: o header
+`Access-Control-Allow-Origin` tem que ser exatamente a origem que pediu, nunca uma lista).
+Corrigir isso direito exigiria threading a request através de `send_response()` - o
+helper de resposta mais usado em todo `confighttp.cpp`, chamado em dezenas de lugares -
+refatoração grande e arriscada pra um achado que não afeta nenhum cliente de verdade (o
+player já fala com o host via `lanhouse-web`'s próprio proxy desde antes, não direto).
+
+**Corrigido na raiz, sem tocar no C++ do host**: adicionado redirect 308 permanente
+`www.lanhousecloudgaming.com.br` → `lanhousecloudgaming.com.br` em
+`lanhouse-web/next.config.ts` (`has: [{type: "host", ...}]`, padrão nativo do Next.js).
+Testado de verdade contra um `next start` local com `Host:` forjado no curl, não só
+"buildou sem erro" - confirmado 308 com path preservado pra `www`, e confirmado que o
+domínio raiz não é afetado (sem loop). Nenhum navegador chega a mandar `Origin: https://www...`
+pro host agora, então a lacuna de CORS nunca é exercitada na prática.
+
+**Lição pra próxima auditoria do Fiscal**: esse item do checklist (seção 5) pode ser
+marcado OK a partir de agora - `www` está coberto por redirect, não precisa mais checar
+`webrtc_allowed_origin` contra as duas variantes de domínio.
