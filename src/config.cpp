@@ -2005,6 +2005,7 @@ namespace config {
 
     string_f(vars, "external_ip", nvhttp.external_ip);
     string_f(vars, "webrtc_allowed_origin", nvhttp.webrtc_allowed_origin);
+    string_f(vars, "webrtc_public_ip", nvhttp.webrtc_public_ip);
     list_prep_cmd_f(vars, "global_prep_cmd", config::sunshine.prep_cmds);
     list_prep_cmd_f(vars, "global_state_cmd", config::sunshine.state_cmds);
     list_server_cmd_f(vars, "server_cmd", config::sunshine.server_cmds);

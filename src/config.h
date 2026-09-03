@@ -302,6 +302,22 @@ namespace config {
     // override", get_cors_origin() falls back to https://localhost:<port>
     // (the pre-existing, panel-only behavior).
     std::string webrtc_allowed_origin;
+
+    // Public (WAN) IP this host is reachable at, when it has a fixed IP and
+    // the WebRTC media ports (video/audio/control) are statically port-
+    // forwarded to it 1:1. The native libwebrtc engine has no STUN server
+    // configured (SUNSHINE_WEBRTC_ICE_SERVERS only informs the *browser*
+    // side, not this host's own ICE gathering - see on_ice_candidate() in
+    // webrtc_stream.cpp), so every ICE candidate it produces carries this
+    // host's private LAN address, unreachable by any client outside the
+    // local network. Empty means "no override" - candidates go out
+    // unmodified, host candidates only ever work for LAN clients (the
+    // pre-existing behavior). When set, on_ice_candidate() rewrites the
+    // address field of "typ host" IPv4 candidates to this value before
+    // they're sent to the client - correct specifically because the port
+    // mapping is static (no STUN needed to discover it, unlike a dynamic
+    // NAT where the external port could differ from the internal one).
+    std::string webrtc_public_ip;
   };
 
   struct input_t {

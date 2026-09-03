@@ -3508,6 +3508,44 @@ namespace webrtc_stream {
     }
 
 #ifdef SUNSHINE_ENABLE_WEBRTC
+    // config::nvhttp.webrtc_public_ip override (see config.h for the full
+    // rationale): the native libwebrtc engine has no STUN server configured,
+    // so every candidate it gathers carries this host's private LAN address.
+    // Rewrites the address field of "typ host" IPv4 candidates to the
+    // configured public IP - safe specifically because the WebRTC media
+    // ports are statically port-forwarded 1:1, so the port itself needs no
+    // rewriting. Leaves IPv6 and mDNS-obfuscated (*.local) candidates alone -
+    // neither is a plain IPv4 address this override is meant to replace.
+    std::string rewrite_ice_candidate_for_wan(const std::string &candidate) {
+      const auto &public_ip = config::nvhttp.webrtc_public_ip;
+      if (public_ip.empty()) {
+        return candidate;
+      }
+
+      bool has_a_prefix = candidate.rfind("a=", 0) == 0;
+      std::string body = has_a_prefix ? candidate.substr(2) : candidate;
+
+      std::vector<std::string> tokens;
+      boost::split(tokens, body, boost::is_any_of(" "));
+      // candidate:<foundation> <component> <transport> <priority> <address>
+      // <port> typ <type> ... (RFC 8839) - address is tokens[4], type is
+      // tokens[7], guarded by checking tokens[6] == "typ" first.
+      if (tokens.size() < 8 || tokens[6] != "typ" || tokens[7] != "host") {
+        return candidate;
+      }
+
+      const std::string &address = tokens[4];
+      bool looks_ipv4 = std::count(address.begin(), address.end(), '.') == 3 &&
+                         address.find_first_not_of("0123456789.") == std::string::npos;
+      if (!looks_ipv4) {
+        return candidate;
+      }
+
+      tokens[4] = public_ip;
+      std::string rewritten = boost::algorithm::join(tokens, " ");
+      return has_a_prefix ? "a=" + rewritten : rewritten;
+    }
+
     void on_ice_candidate(
       void *user,
       const char *mid,
@@ -3521,7 +3559,7 @@ namespace webrtc_stream {
       if (!mid || !candidate) {
         return;
       }
-      add_local_candidate(ctx->id, std::string {mid}, mline_index, std::string {candidate});
+      add_local_candidate(ctx->id, std::string {mid}, mline_index, rewrite_ice_candidate_for_wan(std::string {candidate}));
     }
 
     constexpr std::uint8_t kInputBinaryMouseMove = 1;
