@@ -593,3 +593,48 @@ acima sobre WebRTC testado em 2026-08-21 (H.264 e HEVC ambos 60fps/10-14ms sem e
 problema aparecer) e sobre o AV1 quebrado (tela rosa) — este bug do HEVC_AMF reiniciando
 segue sem causa raiz 100% confirmada, mas é uma das razões concretas que motivou avaliar o
 Vibepollo em paralelo (ver decisão de adoção mais acima neste arquivo).**
+
+## Patch de CORS pro player WebRTC do navegador (2026-08-23, corrigido de verdade 2026-09-02)
+
+`get_cors_origin()` em `confighttp.cpp` travava `Access-Control-Allow-Origin` em
+`https://localhost:<porta>` — bloqueia qualquer chamada de `/api/webrtc/*` vinda de fora do
+próprio painel, inclusive do domínio real do site
+(`lanhouse-web/app/play/`). Adicionado `webrtc_allowed_origin` em `config.h`/`config.cpp`
+como override configurável em `sunshine.conf`.
+
+**Achado tarde, 2026-09-02, testando via WAN pela primeira vez:** o build vendorizado em
+23/08 (commit `8d4bca69`) **nunca teve essa correção de verdade** — testando o CORS pelo
+IP público, o header continuava devolvendo `localhost`. Duas causas raiz distintas,
+ambas corrigidas:
+
+1. **Bug de build, não relacionado ao patch**: `refresh_driver_package.ps1` roda `git
+   describe --tags --long --match 'v[0-9]*'` dentro do submódulo `third-party/
+   libvirtualdisplay` pra derivar a versão do driver — se nenhuma tag alcançável existe
+   (aconteceu nas duas primeiras tentativas de rebuild), o `git.exe` escreve no stderr e
+   sai com código != 0. O script já tinha uma checagem de `$LASTEXITCODE` logo depois pra
+   tratar esse caso (retornar string vazia), mas o arquivo tem `$ErrorActionPreference =
+   'Stop'` no topo — isso transforma o stderr do comando nativo em exceção fatal do
+   PowerShell **antes** da checagem rodar, derrubando o build inteiro. Corrigido
+   envolvendo as 4 chamadas nativas de `git` do arquivo em `try/catch`
+   (commit `3715498e`).
+2. **O patch original só cobria 1 de 4 lugares no código**: `get_cors_origin()` em
+   `confighttp.cpp` estava certo, mas `/api/webrtc/*` e `/api/token` passam pela camada de
+   auth (`http_auth.cpp`/`http_auth_request_policy.cpp`), que tinha **3 cópias
+   independentes e hardcoded** da mesma lógica `https://localhost:<porta>`, nunca lendo
+   `webrtc_allowed_origin`. Corrigido fazendo as 3 checarem o override também, incluindo um
+   novo campo `cors_origin` em `RequestAuthDependencies` (mesmo padrão de injeção de
+   dependência já usado pra `https_port`) pra `http_auth_request_policy.cpp` continuar sem
+   depender direto de `config::` (commit `9ad86b91`).
+
+**Validado de verdade** (não só "buildou sem erro"): `curl` direto no IP público
+(`186.196.69.131:47990/api/webrtc/sessions`) devolvendo
+`Access-Control-Allow-Origin: https://lanhousecloudgaming.com.br` em vez de `localhost`.
+
+**Lição pra próxima vez**: "o build passou" não é evidência de que um patch funciona —
+só testar o comportamento real (aqui, o header HTTP de verdade contra uma chamada real)
+confirma. O build de 23/08 "passou" com a mesma falha silenciosa duas vezes seguidas antes
+de alguém checar o header de fato.
+
+Binário vendorizado atual: `vendor/VibepolloSetup-v1.18.4-stable.3-webrtc-cors-patch.exe`,
+sha256 `5f172685a25331647c823e6ac3aa79c4b82b024008db59781e5db788f2840143`, buildado do
+commit `9ad86b91` via `gh workflow run ci.yml --repo brunoerico/Vibepollo --ref master`.
