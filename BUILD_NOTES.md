@@ -752,3 +752,38 @@ próprio `GET /api/apps` autenticado, se preferir não depender do formato inter
 arquivo). Recalcular manualmente só funciona pra apps sem UUID (legado), e esse valor
 pode mudar sozinho depois de qualquer reset de config - vale conferir de novo se um jogo
 que já funcionou antes começar a dar "Cannot find requested application".
+
+## Pointer Lock (mouse_move_rel) no bridge WebRTC (2026-09-03)
+
+Primeiro teste ponta a ponta bem-sucedido (depois dos 5 bugs acima) revelou dois cursores
+visíveis ao mover o mouse - o cursor local do navegador por cima do cursor remoto já
+desenhado no frame capturado pelo host. Causa: o bridge WebRTC só falava posição
+**absoluta** (`make_abs_mouse_move_packet`/`NV_ABS_MOUSE_MOVE_PACKET`) - sem suporte a
+movimento relativo, o player do navegador não tinha como usar a Pointer Lock API do
+próprio navegador (que exige mandar deltas, não posição). Isso também bloqueava mira de
+FPS de verdade (CS2) via navegador - posição absoluta normalizada não serve pra
+mouselook contínuo.
+
+**Achado real**: `NV_REL_MOUSE_MOVE_PACKET` já existe no protocolo clássico do GameStream
+(`moonlight-common-c/src/Input.h`, magic `MOUSE_MOVE_REL_MAGIC_GEN5`) - o client nativo
+(moonlight-qt/SDL) já usa isso, só nunca tinha sido ligado no handler de input JSON do
+bridge WebRTC (`webrtc_stream.cpp::handle_input_message`).
+
+**Correção** (commit `c4e13e76`): `make_rel_mouse_move_packet(dx, dy)` (mesmo padrão de
+`make_abs_mouse_move_packet`) + novo tipo `"mouse_move_rel"` no handler de input. Lado do
+navegador (`lanhouse-web`, commit `1112d3a` no repo principal): `PlayerClient.tsx` agora
+chama `requestPointerLock()` no primeiro clique sobre o vídeo, manda `mouse_move_rel` com
+`movementX`/`movementY` enquanto travado, e cai de volta pro `mouse_move` absoluto antes
+do primeiro clique (ou depois de ESC liberar o lock). Cliques omitem `x`/`y` enquanto
+travado, pra não warpar o cursor no host a cada clique.
+
+**Binário vendorizado atual**: `vendor/VibepolloSetup-v1.18.4-stable.3-pointer-lock.exe`,
+sha256 `461dab143a058f2655bfc707fb2d54aaedc9976100dca0dc954013f31e18b07e`, buildado do
+commit `c4e13e76` via `gh workflow run ci.yml --repo brunoerico/Vibepollo --ref master`
+(run `33752491503`).
+
+**Status: instalado na `maquina-teste` via `/qn`** (sem reboot completo - avaliado e
+descartado, é mudança só de código de aplicação, sem driver envolvido). Confirmado depois:
+`ApolloService` `Running`, porta 47990 respondendo, `uniqueid` e configs de
+CORS/CSRF/webrtc_public_ip intactos. **Teste ponta a ponta pelo navegador (travar o
+cursor de verdade, verificar CS2 mirando) ainda pendente.**
