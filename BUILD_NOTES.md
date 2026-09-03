@@ -723,3 +723,32 @@ apontando pro domínio real do site. Uma sem a outra falha de formas diferentes 
 
 **Ainda falta**: o teste de verdade ponta a ponta pelo navegador (SDP/ICE/mídia) - até
 agora só confirmamos que o POST de criação de sessão é aceito.
+
+## Quinto bug: `host_games.moonlight_app_id` no Supabase estava desalinhado do host de verdade (2026-09-03)
+
+Com CORS e CSRF resolvidos, o POST de `/api/webrtc/sessions` chegou a ser aceito mas
+devolveu `400 {"error":"Cannot find requested application"}`. Causa: `app_id` mandado
+pelo player vem de `host_games.moonlight_app_id` no Supabase, mas esse valor tinha sido
+calculado manualmente em algum momento anterior (fórmula CRC32 legada de
+`process.cpp::calculate_app_id`) - e o Vibepollo **não usa mais essa fórmula quando o app
+tem UUID** (a maioria tem, ver `app_catalog_policy.cpp:75-90`): ele mantém um ID numérico
+persistido por UUID em `vibeshine_state.json` → `root.app_id_aliases`, estável entre
+trocas de capa, que não corresponde ao hash legado. Os 4 jogos da `maquina-teste`
+estavam **todos** desalinhados (provavelmente desde algum reset de config anterior):
+
+| Jogo | Supabase (errado) | Host (`vibeshine_state.json`, correto) |
+|---|---|---|
+| eFootball | 1032369180 | 752359158 |
+| Counter-Strike 2 | 243368261 | 1206451999 |
+| Magic: The Gathering Arena | 318803412 | 127090365 |
+| Dota 2 | 831329605 | 586428454 |
+
+**Corrigido** atualizando `host_games.moonlight_app_id` direto no Supabase pra bater com
+o `current_id` de cada UUID em `vibeshine_state.json`.
+
+**Lição pra `maquinista.md` (Etapa 8)**: nunca calcular `moonlight_app_id` na mão - ler
+direto de `vibeshine_state.json` → `app_id_aliases[<uuid>].current_id` no host (ou do
+próprio `GET /api/apps` autenticado, se preferir não depender do formato interno do
+arquivo). Recalcular manualmente só funciona pra apps sem UUID (legado), e esse valor
+pode mudar sozinho depois de qualquer reset de config - vale conferir de novo se um jogo
+que já funcionou antes começar a dar "Cannot find requested application".
