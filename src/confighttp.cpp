@@ -5714,6 +5714,16 @@ namespace confighttp {
     server.default_resource["PUT"] = [](resp_https_t response, req_https_t request) {
       bad_request(response, request);
     };
+    // Browser CORS preflight for cross-origin API calls (e.g. the LanHouse
+    // browser player hitting this host directly from its own domain) - a
+    // POST with Content-Type: application/json and an Authorization header
+    // is never a CORS-safelisted request, so the browser sends this OPTIONS
+    // request first and aborts the real request if it isn't answered.
+    server.default_resource["OPTIONS"] = [](resp_https_t response, [[maybe_unused]] req_https_t request) {
+      SimpleWeb::CaseInsensitiveMultimap headers;
+      add_cors_headers(headers);
+      response->write(SimpleWeb::StatusCode::success_no_content, headers);
+    };
 
     // Static browser assets are public; every state-changing API below still
     // passes through the existing authentication and CSRF gates.
