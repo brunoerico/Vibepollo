@@ -859,3 +859,115 @@ pro host agora, então a lacuna de CORS nunca é exercitada na prática.
 **Lição pra próxima auditoria do Fiscal**: esse item do checklist (seção 5) pode ser
 marcado OK a partir de agora - `www` está coberto por redirect, não precisa mais checar
 `webrtc_allowed_origin` contra as duas variantes de domínio.
+
+## Incidente 2026-10-07: lista de clientes vazia virava "Apollo fora do ar" e tirava o host da fila pra sempre
+
+Achado testando a gestão automática de hosts nova (ver
+`lanhouse-web/docs/superpowers/specs/2026-10-05-gestao-automatica-hosts-design.md`) contra
+a `maquina-teste` de verdade. Sintoma pro cliente: TV e app Mac mostrando "Permission
+denied: lacks Launch applications" ou caindo direto na fila ("Todos os servidores desse
+jogo estão ocupados agora"), mesmo com o host saudável e o Apollo respondendo normal.
+
+### Becos sem saída investigados primeiro (documentados pra não repetir)
+
+Antes de achar a causa real, três hipóteses erradas consumiram a maior parte da
+investigação:
+
+1. **Falta de display virtual.** `Get-CimInstance WmiMonitorBasicDisplayParams` e
+   `[System.Windows.Forms.Screen]::AllScreens`, rodados via SSH, voltaram zero monitores -
+   parecia confirmar que a GPU não tinha onde capturar vídeo (chegou a ser recomendado
+   comprar um plugue HDMI dummy). **Falso negativo**: o SSH cai na Session 0, e o
+   `sunshine.exe`/display de verdade roda na Session 1 (a sessão interativa,
+   `AutoAdminLogon`). `Win32_VideoController` (não é limitado por sessão) confirmou o
+   `Sunshine Virtual Display Driver` ativo em 1920x1080@60 o tempo todo. Mesma classe de
+   bug do "`query session` via SSH dá falso negativo" do incidente de 2026-08-15 acima,
+   agora confirmada também pra WMI/.NET de monitor.
+2. **Travamento do próprio `/api/auth/login` do Apollo.** Reproduzido ao vivo várias vezes
+   (timeout de 15s+), inclusive depois de reiniciar o serviço e depois de reiniciar a
+   máquina inteira. Minutos depois, o mesmo endpoint respondia em 200-400ms, repetidamente,
+   sem nenhuma mudança deliberada. Suspeita mais forte (não provada): bateu com uma rodada
+   de testes do agente Fiscal fazendo várias tentativas de login com senha errada **de
+   propósito** (pra não alterar estado) - se o Apollo tiver algum rate-limit/lockout
+   básico contra tentativas falhas, isso explicaria o travamento coincidir com os testes.
+3. **Duas instâncias do `lanhouse-host-agent.ps1` rodando ao mesmo tempo.** Reproduzido
+   repetidas vezes: minutos (às vezes segundos) depois de um `schtasks /run` limpo, com
+   zero processos antes, apareciam dois `powershell.exe` com a mesma `-File
+   lanhouse-host-agent.ps1`. A Scheduled Task tem `MultipleInstancesPolicy: IgnoreNew`, que
+   deveria impedir isso. **Causa raiz não confirmada - fica em aberto.** Pode ter sido só
+   efeito da sessão de teste (muitos `schtasks /end`+`/run` em sequência rápida, coisa que
+   um fluxo normal de produção nunca faria), mas se acontecer sem esse padrão de uso
+   pesado, investigar o acionador da Scheduled Task (`LogonTrigger` + possível corrida com
+   o `AutoAdminLogon`).
+
+### Causa raiz real (confirmada, isolada com teste controlado)
+
+`Get-ApolloClients` (função nova do agente, lê `GET /api/clients/list`) retornava `$null`
+**toda vez que o host tinha zero clientes pareados** - exatamente o estado normal logo
+depois de uma instalação limpa, ou depois de remover clientes pra testar re-pareamento.
+`$null` é o mesmo valor que a função usa pra sinalizar "falha ao ler a lista", então o
+código que decide a saúde do host (`Invoke-HostHealthCycle`) interpretava "ninguém
+pareado" como "Apollo fora do ar", marcava `host_health.apollo_reachable = false`, e
+`host_launchable()` (ver migration `20261006000000_launch_failure_gate.sql`) excluía o
+host da alocação **antes de qualquer cliente chegar a tentar parear**.
+
+Dois bugs de PowerShell 5.1 encadeados, cada um mascarando investigação do outro:
+
+1. **`ConvertFrom-Json` transforma um array JSON vazio (`[]`) em `$null`, não em array
+   vazio.** A resposta real do Apollo (`{"named_certs":[],...}`) é perfeitamente válida -
+   só significa "zero clientes", não erro nenhum.
+2. **Mesmo corrigindo com `return @()`, o retorno ainda virava `$null` pra quem
+   chamava** (`$r = Get-ApolloClients`). Isso não é bug do Apollo nem da rede - é
+   comportamento documentado do PowerShell: uma função que não manda **nenhum objeto** pro
+   pipeline sempre vira `$null` no destino de uma atribuição simples, mesmo que o "valor
+   lógico" seja um array vazio. É preciso a vírgula unária (`return ,@(...)`) pra embrulhar
+   o array inteiro como **um objeto só** no pipeline, garantindo que pelo menos um objeto
+   chegue (o array, mesmo vazio).
+
+**Técnica usada pra isolar** (útil pra qualquer bug parecido no futuro): copiar o trecho
+do script até antes do loop principal (`while ($true)`) pra um arquivo à parte, dot-source
+com os parâmetros obrigatórios, e rodar o **mesmo código** de duas formas na mesma sessão -
+uma vez como chamada de função (`Get-ApolloClients`) e uma vez copiado inline, com o mesmo
+cookie. A função dava `$null`; o código inline, idêntico, dava a resposta certa - isso que
+provou que o bug não era de rede/Apollo/cookie, e sim de como a função embrulha seu
+retorno.
+
+### Correção aplicada
+
+`dev/Arquivos LanHouse/host-agent/lanhouse-host-agent.ps1`, função `Get-ApolloClients`:
+
+```powershell
+$namedCerts = ($body | ConvertFrom-Json).named_certs
+if ($null -eq $namedCerts) { return ,@() }
+return ,@($namedCerts)
+```
+
+### Lição geral pra não repetir
+
+- **Todo array JSON que pode legitimamente vir vazio precisa de um `if ($null -eq ...)`
+  explícito depois do `ConvertFrom-Json`** neste projeto (PowerShell 5.1, não 7+) - "vazio"
+  e "nulo" não são a mesma coisa pro chamador, mas o parser de JSON não respeita essa
+  diferença sozinho.
+- **Toda função PowerShell que precisa devolver um array de forma distinguível de `$null`
+  (inclusive vazio) precisa da vírgula unária no `return`** (`return ,@(...)`), não só
+  `return @(...)`. Vale auditar as outras funções do mesmo arquivo que fazem
+  `return @(...)` (ex: `Get-NamedCertUuids`) pelo mesmo risco.
+- **Antes de aceitar uma causa-raiz "de ambiente" (hardware, driver, rede) e recomendar
+  ação física ou cara, isolar com um teste controlado e repetível.** A hipótese do display
+  chegou perto de virar uma recomendação de compra sem necessidade nenhuma.
+- Um host que está "mais limpo" (zero clientes pareados, estado normal pós-instalação)
+  pode disparar bugs que um host "sujo" (com histórico de pareamentos) nunca exercita -
+  vale testar explicitamente o caminho de lista vazia em qualquer função nova que lê
+  estado do Apollo.
+
+### Plano de prevenção
+
+1. Qualquer função nova em `lanhouse-host-agent.ps1` que faça `ConvertFrom-Json` de uma
+   lista deve tratar explicitamente o caso vazio, e usar `return ,@(...)` se precisar
+   devolver array.
+2. `Get-NamedCertUuids` usa o mesmo padrão de `return @(...)` sem vírgula - mesmo não
+   tendo causado o incidente de hoje, está exposta ao mesmo risco e deveria ser corrigida
+   junto na próxima vez que o arquivo for mexido.
+3. A causa das duas instâncias simultâneas da Scheduled Task (seção "Becos sem saída",
+   item 3) continua aberta - não repetir `schtasks /end`+`/run` em sequência rápida sem
+   confirmar (via `tasklist`/WMI) que a instância anterior morreu de verdade antes da
+   próxima.
